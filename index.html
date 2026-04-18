@@ -208,6 +208,7 @@ body{background:#0f172a;min-height:100vh}
 var ADMIN_PASS = 'admin123';
 
 var SK = 'asbemge_reservas_v1';
+var FB = 'https://baile-das-maes-default-rtdb.firebaseio.com';
 
 // ════════════════════════════════════════════
 //  LAYOUT DAS MESAS
@@ -265,13 +266,64 @@ function buildInitial() {
 // ════════════════════════════════════════════
 
 // ════════════════════════════════════════════
+//  FIREBASE REST
+// ════════════════════════════════════════════
+var sseSource = null;
+
+function fbGet(path) {
+  return fetch(FB+path+'.json').then(function(r){ return r.json(); });
+}
+function fbPatch(path, data) {
+  return fetch(FB+path+'.json', {method:'PATCH', body:JSON.stringify(data), headers:{'Content-Type':'application/json'}});
+}
+function fbSet(path, data) {
+  return fetch(FB+path+'.json', {method:'PUT', body:JSON.stringify(data), headers:{'Content-Type':'application/json'}});
+}
+function startSSE() {
+  if(sseSource) { try { sseSource.close(); } catch(e) {} }
+  try {
+    sseSource = new EventSource(FB+'/mesas.json');
+    sseSource.addEventListener('put', function(e) {
+      try {
+        var d = JSON.parse(e.data);
+        if(d && d.data && typeof d.data==='object') {
+          state = d.data; saveLocal(state); renderAll(); updateResCount();
+        }
+      } catch(err) {}
+    });
+    sseSource.addEventListener('patch', function(e) {
+      try {
+        var d = JSON.parse(e.data);
+        if(d && d.data) {
+          Object.keys(d.data).forEach(function(k){ state[k] = d.data[k]; });
+          saveLocal(state); renderAll(); updateResCount();
+        }
+      } catch(err) {}
+    });
+    sseSource.onopen  = function() { setConnected(true); };
+    sseSource.onerror = function() { setConnected(false); };
+  } catch(e) { setConnected(false); }
+}
+
+// ════════════════════════════════════════════
 //  INIT
 // ════════════════════════════════════════════
 function init() {
+  // Render immediately from localStorage
   state = loadLocal() || buildInitial();
   buildMap();
   renderAll();
-  setConnected(true);
+
+  // Sync Firebase in background
+  fbGet('/mesas').then(function(data) {
+    if(data && typeof data==='object' && Object.keys(data).length > 0) {
+      state = data; saveLocal(state); renderAll(); updateResCount(); setConnected(true);
+    } else {
+      fbSet('/mesas', state).catch(function(){});
+      setConnected(true);
+    }
+    startSSE();
+  }).catch(function() { setConnected(false); startSSE(); });
 }
 
 // ════════════════════════════════════════════
@@ -338,10 +390,10 @@ function setConnected(ok) {
   var dot=document.getElementById('conn-dot');
   var lbl=document.getElementById('conn-label');
   var pill=document.getElementById('conn-pill');
-  dot.style.background='#22c55e';
-  lbl.style.color='#86efac';
-  pill.style.background='rgba(34,197,94,.25)';
-  lbl.textContent='Local';
+  dot.style.background=ok?'#22c55e':'#ef4444';
+  lbl.style.color=ok?'#86efac':'#fca5a5';
+  pill.style.background=ok?'rgba(34,197,94,.25)':'rgba(239,68,68,.25)';
+  lbl.textContent=ok?'Online':'Offline';
 }
 
 // ════════════════════════════════════════════
@@ -387,6 +439,8 @@ function confirmReserve(id) {
   if(!name||!phone){document.getElementById('f-err').style.display='block';return;}
   state[id]={status:'reserved',name:name,phone:phone};
   saveLocal(state); renderAll(); closeOverlay();
+  var _p={}; _p[id]={status:'reserved',name:name,phone:phone};
+  fbPatch('/mesas',_p).catch(function(){});
   fbPatch('/mesas',(_defineProperty({},[id],{status:'reserved',name:name,phone:phone}))).catch(function(){});
   // Simple patch helper
 
@@ -427,11 +481,15 @@ function adminFinalize(id) {
   var prev=state[id]||{};
   state[id]=Object.assign({},prev,{status:'finalized'});
   saveLocal(state); renderAll(); closeOverlay();
+  var _p={}; _p[id]=state[id];
+  fbPatch('/mesas',_p).catch(function(){});
 
 }
 function adminRelease(id) {
   state[id]={status:'available',name:'',phone:''};
   saveLocal(state); renderAll(); closeOverlay();
+  var _p={}; _p[id]=state[id];
+  fbPatch('/mesas',_p).catch(function(){});
 
 }
 
